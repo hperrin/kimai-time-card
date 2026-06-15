@@ -1,0 +1,446 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Kimai Time Card Parser</title>
+    <script
+      src="https://unpkg.com/react@18/umd/react.development.js"
+      crossorigin
+    ></script>
+    <script
+      src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"
+      crossorigin
+    ></script>
+    <script
+      src="https://unpkg.com/@babel/standalone@7.10.3/babel.min.js"
+      crossorigin
+    ></script>
+    <script src="https://unpkg.com/dayjs@1/dayjs.min.js" crossorigin></script>
+    <script
+      src="https://unpkg.com/dayjs@1/plugin/isoWeek.js"
+      crossorigin
+    ></script>
+  </head>
+
+  <body>
+    <div id="root"></div>
+
+    <script type="text/babel" data-presets="react,stage-3">
+      dayjs.extend(dayjs_plugin_isoWeek);
+
+      const TimeEntries = () => {
+        const [selectedFile, setSelectedFile] = React.useState(null);
+        const [timeEntries, setTimeEntries] = React.useState(null);
+        const [beginDate, setBeginDate] = React.useState(dayjs());
+        const [endDate, setEndDate] = React.useState(dayjs());
+        const [days, setDays] = React.useState([]);
+        const [errorMessage, setErrorMessage] = React.useState(null);
+        const [detail, setDetail] = React.useState(null);
+
+        React.useEffect(() => {
+          console.log(timeEntries);
+        });
+
+        const onFileChange = (event) => {
+          setSelectedFile(event.target.files[0]);
+        };
+
+        function processFile() {
+          if (selectedFile != null) {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+              const dataURL = new URL(e.target.result);
+
+              if (!dataURL.pathname.match(/^text\/csv/)) {
+                setErrorMessage("Not a CSV file.");
+                return;
+              }
+
+              let fileData = dataURL.pathname.split(";").slice(1).join(";");
+
+              if (fileData.startsWith("base64,")) {
+                fileData = atob(fileData.split(",").slice(1).join(","));
+              }
+
+              const timeEntries = processCSV(fileData);
+              setTimeEntries(timeEntries);
+              const beginDate = dayjs(Object.keys(timeEntries.byDate)[0]);
+              setBeginDate(beginDate);
+              const endDate = dayjs(Object.keys(timeEntries.byDate).pop())
+                .hour(23)
+                .minute(59)
+                .second(59);
+              setEndDate(endDate);
+
+              const days = [];
+              let currentDay = beginDate.clone();
+              while (currentDay.valueOf() <= endDate.valueOf()) {
+                days.push(currentDay);
+                currentDay = currentDay.add(1, "day");
+              }
+              setDays(days);
+            };
+            reader.readAsDataURL(selectedFile);
+          }
+        }
+
+        function processCSV(csv) {
+          let lines = [];
+
+          let inQuote = false;
+          let lineStart = 0;
+          for (let i = 0; i < csv.length; i++) {
+            if (csv[i] === "\n" && !inQuote) {
+              lines.push(csv.slice(lineStart, i));
+              lineStart = i + 1;
+            } else if (csv[i] === '"' && !inQuote) {
+              inQuote = true;
+            } else if (csv[i] === '"' && inQuote) {
+              if (csv[i + 1] === '"') {
+                i++;
+              } else {
+                inQuote = false;
+              }
+            }
+          }
+          // Add last line.
+          lines.push(csv.slice(lineStart));
+          // Filter empty lines.
+          lines = lines.filter((line) => line.trim() != "");
+
+          const processedLines = [];
+
+          for (let line of lines) {
+            let columns = line.split(",");
+
+            // Add up all of the splits that cross quotes.
+            for (let i = 0; i < columns.length; i++) {
+              if (columns[i].startsWith('"')) {
+                while (!columns[i].endsWith('"') || columns[i].endsWith('""')) {
+                  columns[i] += "," + columns.splice(i + 1, 1);
+                }
+
+                columns[i] = columns[i]
+                  .slice(1, -1)
+                  .replaceAll(/""/g, () => '"');
+              }
+            }
+
+            processedLines.push(columns);
+          }
+
+          const [headers, ...data] = processedLines;
+          const entries = [];
+          for (let line of data) {
+            const entry = Object.fromEntries(
+              line
+                .map((entry, i) => [headers[i], entry])
+                .filter(([header]) =>
+                  [
+                    "Date",
+                    "From",
+                    "To",
+                    "Duration",
+                    "Name",
+                    "User",
+                    "E-mail",
+                    "Project",
+                    "Activity",
+                    "Description",
+                  ].includes(header),
+                ),
+            );
+            let [hours, minutes] = entry.Duration.split(":");
+            entry.DurationDecimal =
+              parseFloat(hours) + parseFloat(minutes) / 60;
+            [hours, minutes] = entry.From.split(":");
+            entry.FromDecimal = parseFloat(hours) + parseFloat(minutes) / 60;
+            [hours, minutes] = entry.To.split(":");
+            entry.ToDecimal = parseFloat(hours) + parseFloat(minutes) / 60;
+            entries.push(entry);
+            entry.BreakDecimal =
+              entry.ToDecimal - entry.FromDecimal - entry.DurationDecimal;
+
+            entry.DurationDecimal = Math.round(entry.DurationDecimal * 10) / 10;
+            entry.FromDecimal = Math.round(entry.FromDecimal * 10) / 10;
+            entry.ToDecimal = Math.round(entry.ToDecimal * 10) / 10;
+            entry.BreakDecimal = Math.round(entry.BreakDecimal * 10) / 10;
+          }
+
+          // By User (and Date)
+          const byUser = Object.fromEntries(
+            entries
+              .map((entry) => [entry.User, []])
+              .sort((a, b) => a[0].localeCompare(b[0])),
+          );
+
+          for (let entry of entries) {
+            byUser[entry.User].push(entry);
+          }
+
+          for (let user of Object.keys(byUser)) {
+            const entries = byUser[user];
+
+            const byDate = Object.fromEntries(
+              entries
+                .map((entry) => [entry.Date, { entries: [], total: 0 }])
+                .sort((a, b) => a[0].localeCompare(b[0])),
+            );
+
+            for (let entry of entries) {
+              byDate[entry.Date].entries.push(entry);
+              byDate[entry.Date].total =
+                Math.round(
+                  (byDate[entry.Date].total + entry.DurationDecimal) * 10,
+                ) / 10;
+            }
+
+            const byWeek = Object.fromEntries(
+              entries.map((entry) => [
+                dayjs(entry.Date).isoWeek(),
+                { entries: [], total: 0 },
+              ]),
+            );
+
+            for (let entry of entries) {
+              byWeek[dayjs(entry.Date).isoWeek()].entries.push(entry);
+              byWeek[dayjs(entry.Date).isoWeek()].total =
+                Math.round(
+                  (byWeek[dayjs(entry.Date).isoWeek()].total +
+                    entry.DurationDecimal) *
+                    10,
+                ) / 10;
+            }
+
+            byUser[user] = {
+              byDate,
+              byWeek,
+              total:
+                Math.round(
+                  entries.reduce(
+                    (total, entry) => total + entry.DurationDecimal,
+                    0,
+                  ) * 10,
+                ) / 10,
+            };
+          }
+
+          // By Date
+          const byDate = Object.fromEntries(
+            entries
+              .map((entry) => [entry.Date, []])
+              .sort((a, b) => a[0].localeCompare(b[0])),
+          );
+
+          for (let entry of entries) {
+            byDate[entry.Date].push(entry);
+          }
+
+          // Map usernames to names
+          const usernameToNameMap = Object.fromEntries(
+            entries.map((entry) => [entry.User, entry.Name]),
+          );
+
+          return {
+            byUser,
+            byDate,
+            entries,
+            total:
+              Math.round(
+                entries.reduce(
+                  (total, entry) => total + entry.DurationDecimal,
+                  0,
+                ) * 10,
+              ) / 10,
+            usernameToNameMap,
+          };
+        }
+
+        return (
+          <div>
+            <p>
+              Upload a Kimai CSV export:{" "}
+              <input type="file" id="input" onChange={onFileChange} />
+            </p>
+            <button onClick={processFile}>Process</button>
+            {/*
+              By calendar week
+
+              Start date and time
+
+              Flag above 8 hours per day
+              Flag above 40 hours per week
+
+              Present hours as decimal
+            */}
+            {errorMessage != null ? (
+              <p style={{ color: "red" }}>{errorMessage}</p>
+            ) : timeEntries == null ? undefined : (
+              <>
+                <div
+                  style={{
+                    marginTop: "2em",
+                    width: "100%",
+                    padding: "1em",
+                    boxSizing: "border-box",
+                  }}
+                >
+                  <table style={{ width: "100%" }}>
+                    <thead>
+                      <tr>
+                        <th>Employee</th>
+                        {days.map((day) => (
+                          <th>{day.format("dd M/DD")}</th>
+                        ))}
+                        <th>Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {Object.entries(timeEntries.byUser).map(
+                        ([user, userEntries], i) => (
+                          <>
+                            <tr
+                              style={{
+                                backgroundColor: "#eee",
+                              }}
+                            >
+                              <td>{timeEntries.usernameToNameMap[user]}</td>
+                              {days.map((day) => (
+                                <td
+                                  onClick={() =>
+                                    setDetail(
+                                      userEntries.byDate[
+                                        day.format("YYYY-MM-DD")
+                                      ].entries,
+                                    )
+                                  }
+                                  style={{
+                                    textAlign: "right",
+                                    ...((userEntries.byDate[
+                                      day.format("YYYY-MM-DD")
+                                    ]?.total ?? 0) > 8
+                                      ? {
+                                          color: "red",
+                                          fontWeight: "bold",
+                                        }
+                                      : {}),
+                                  }}
+                                >
+                                  {userEntries.byDate[day.format("YYYY-MM-DD")]
+                                    ?.total ?? ""}
+                                </td>
+                              ))}
+                              <td></td>
+                            </tr>
+                            <tr>
+                              <td></td>
+                              {days.map((day) =>
+                                day.day() === 0 ? (
+                                  <td
+                                    onClick={() =>
+                                      setDetail(
+                                        userEntries.byWeek[day.isoWeek()]
+                                          .entries,
+                                      )
+                                    }
+                                    style={{
+                                      textAlign: "right",
+                                      backgroundColor: "#eee",
+                                      ...((userEntries.byWeek[day.isoWeek()]
+                                        ?.total ?? 0) > 40
+                                        ? {
+                                            color: "red",
+                                            fontWeight: "bold",
+                                          }
+                                        : {}),
+                                    }}
+                                  >
+                                    {userEntries.byWeek[day.isoWeek()]?.total ??
+                                      ""}
+                                  </td>
+                                ) : (
+                                  <td></td>
+                                ),
+                              )}
+                              <td
+                                onClick={() =>
+                                  setDetail(
+                                    Object.values(userEntries.byDate)
+                                      .map((date) => date.entries)
+                                      .flat(),
+                                  )
+                                }
+                                style={{
+                                  backgroundColor: "#eee",
+                                  textAlign: "right",
+                                }}
+                              >
+                                {userEntries.total}
+                              </td>
+                            </tr>
+                          </>
+                        ),
+                      )}
+                      <tr>
+                        <td
+                          style={{
+                            textAlign: "right",
+                            fontWeight: "bold",
+                            backgroundColor: "#ddd",
+                          }}
+                          colspan={days.length + 2}
+                        >
+                          {timeEntries.total}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+
+                {detail == null ? undefined : (
+                  <div
+                    style={{
+                      overflow: "auto",
+                      marginTop: "2em",
+                      width: "100%",
+                      padding: "1em",
+                      boxSizing: "border-box",
+                    }}
+                  >
+                    <table>
+                      <thead>
+                        <tr>
+                          {Object.keys(detail[0]).map((header) => (
+                            <th>{header}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {detail.map((entry, i) => (
+                          <tr
+                            style={{
+                              backgroundColor: i % 2 ? "inherit" : "#eee",
+                            }}
+                          >
+                            {Object.values(entry).map((value) => (
+                              <td>{value}</td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        );
+      };
+
+      const root = ReactDOM.createRoot(document.getElementById("root"));
+      root.render(<TimeEntries />);
+    </script>
+  </body>
+</html>
