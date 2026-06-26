@@ -163,10 +163,11 @@
             entry.BreakDecimal =
               entry.ToDecimal - entry.FromDecimal - entry.DurationDecimal;
 
-            entry.DurationDecimal = Math.round(entry.DurationDecimal * 10) / 10;
-            entry.FromDecimal = Math.round(entry.FromDecimal * 10) / 10;
-            entry.ToDecimal = Math.round(entry.ToDecimal * 10) / 10;
-            entry.BreakDecimal = Math.round(entry.BreakDecimal * 10) / 10;
+            entry.DurationDecimal =
+              Math.round(entry.DurationDecimal * 100) / 100;
+            entry.FromDecimal = Math.round(entry.FromDecimal * 100) / 100;
+            entry.ToDecimal = Math.round(entry.ToDecimal * 100) / 100;
+            entry.BreakDecimal = Math.round(entry.BreakDecimal * 100) / 100;
           }
 
           // By User (and Date)
@@ -193,8 +194,8 @@
               byDate[entry.Date].entries.push(entry);
               byDate[entry.Date].total =
                 Math.round(
-                  (byDate[entry.Date].total + entry.DurationDecimal) * 10,
-                ) / 10;
+                  (byDate[entry.Date].total + entry.DurationDecimal) * 100,
+                ) / 100;
             }
 
             const byWeek = Object.fromEntries(
@@ -222,8 +223,8 @@
                   entries.reduce(
                     (total, entry) => total + entry.DurationDecimal,
                     0,
-                  ) * 10,
-                ) / 10,
+                  ) * 100,
+                ) / 100,
             };
           }
 
@@ -252,8 +253,8 @@
                 entries.reduce(
                   (total, entry) => total + entry.DurationDecimal,
                   0,
-                ) * 10,
-              ) / 10,
+                ) * 100,
+              ) / 100,
             usernameToNameMap,
           };
         }
